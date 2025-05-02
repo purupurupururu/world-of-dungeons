@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.0.0
+// @version      1.0.1
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
