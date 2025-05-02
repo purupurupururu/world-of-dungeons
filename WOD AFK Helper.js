@@ -7,6 +7,7 @@
 // @match        *://*.world-of-dungeons.org/wod/spiel/settings/heroes.php*
 // @match        *://*.world-of-dungeons.org/wod/spiel/rewards/vote.php*
 // @icon         http://info.world-of-dungeons.org/wod/css/WOD.gif
+// @downloadURL  https://raw.githubusercontent.com/purupurupururu/world-of-dungeons/refs/heads/main/WOD%20AFK%20Helper.js
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
@@ -225,7 +226,7 @@
                     lastStoredDate: new Date().getDate(),
                     currentHeroIndex: 0,
                 });
-                this.submitBtn.click();
+                window.location.reload();
                 console.log(State.getState());
                 return;
             }
