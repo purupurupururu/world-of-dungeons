@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.0.2
+// @version      1.0.3
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
@@ -240,13 +240,13 @@
 
             if(currentIndex > 0){
                 this.heroRows.slice(0, currentIndex).forEach(tr => {
-                    const newTd = document.createElement('td');
+                    let newTd = document.createElement('td');
                     newTd.textContent = '入库完成';
                     tr.appendChild(newTd);
                 });
             }
 
-            const newTd = document.createElement('td');
+            let newTd = document.createElement('td');
             newTd.textContent = '入库中';
             this.heroRows[currentIndex].appendChild(newTd);
 
