@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.0.1
+// @version      1.0.2
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
@@ -119,10 +119,10 @@
                 document.querySelectorAll('table.content_table > tbody > tr:not(.header)')
             );
             this.nextDungeonDisabledHeroRows = Array.from(
-                document.querySelectorAll('table.content_table > tbody > tr:not(.header):not(:has(td img))')
+                document.querySelectorAll('table.content_table > tbody > tr:not(.header):not(:has(td:nth-child(5) img))')
             );
             this.nextDungeonAvailableHeroRows = Array.from(
-                document.querySelectorAll('table.content_table > tbody > tr:not(.header):has(td img)')
+                document.querySelectorAll('table.content_table > tbody > tr:not(.header):has(td:nth-child(5) img)')
             );
             this.nextDungeonAvailableHeroDetails = this.nextDungeonAvailableHeroRows.map(row => ({
                 dom: row,
