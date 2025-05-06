@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.0.3
+// @version      1.0.4
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
 // @match        *://*.world-of-dungeons.org/wod/spiel/settings/heroes.php*
 // @match        *://*.world-of-dungeons.org/wod/spiel/rewards/vote.php*
+// @match        *://*.world-of-dungeons.org/wod/spiel/hero/items.php*
 // @icon         http://info.world-of-dungeons.org/wod/css/WOD.gif
 // @downloadURL  https://raw.githubusercontent.com/purupurupururu/world-of-dungeons/refs/heads/main/WOD%20AFK%20Helper.js
 // @grant        GM_setValue
@@ -22,7 +23,7 @@
         if ((/每日|立刻/).test(text)) return 0;
 
         const match = text.match(/(今天|明天)?\s(\d{2}):(\d{2})/);
-        if (!match) throw new Error(`not support string：${text}`);
+        if (!match) throw new Error(`not support string：'${text}'`);
         const [_, dayPart, hours, minutes] = match;
 
         const date = new Date();
@@ -46,72 +47,93 @@
     }
 
     /////////////////////////////////////////////////////////////////////////////////
-    class State{
+
+    class StateManager {
 
         static STORAGE_KEY = 'WOD_HELPER_STATE';
 
-        static getState() {
-            return GM_getValue(this.STORAGE_KEY, {
-                lastStoredDate: 0,
-                currentHeroIndex: 0,
-                checkTime: true,
-            });
+        static DEFAULT_STATE = {
+            _version: '1.0.4',
+            lastStoredDate: 0,
+            currentHeroIndex: 0,
+            reportCheckTimeout: 0,
+            carryingMaxLootHeroes: []
+        };
+
+        static get state() {
+            const storedData = GM_getValue(this.STORAGE_KEY, {});
+            const mergedState = {
+                ...this.DEFAULT_STATE,
+                ...storedData
+            };
+            if (mergedState._version !== this.DEFAULT_STATE._version) {
+                this.delete();
+                return this.DEFAULT_STATE;
+            }
+
+            return mergedState;
         }
 
-        static updateState(updater) {
-            const newState = {...this.getState(), ...updater};
+        static update(value) {
+            const newState = {
+                ...this.state,
+                ...value
+            };
             GM_setValue(this.STORAGE_KEY, newState);
-            return newState;
         }
 
-        static resetState(){
+        static delete() {
             GM_deleteValue(this.STORAGE_KEY);
         }
     }
 
     class HeroesPageManager {
 
-        constructor(){
+        constructor() {
+            this.handstuffedText = '';
             this.heroRows = null;
             this.nextDungeonDisabledHeroRows = null;
             this.nextDungeonAvailableHeroRows = null;
             this.nextDungeonAvailableHeroDetails = null;
             this.firstCompletedDungeonTime = null;
             this.firstCompletedheroDetails = null;
+            this.nextDungeonReducibleHeroRows = null;
             this.submitBtn = document.querySelector('input[type="submit"][name="ok"]');
             this.reduceBtn = document.querySelector('input[name="reduce_dungeon_time"]');
-
+            this.storingText = '入库中';
+            this.emptyHandsText = '入库完成';
+            this.carryingMaxLootText = '手里拿满了';
+            this.unselectedText = '未选择地城';
             this.init();
         }
 
         init() {
             if (!this.inHeroListPageContent()) return;
-            if (this.handleReduceBtn()) return;
             this.processHeroList();
-            this.monitor();
+            if (this.storeLoot()) return;
+            if (this.handleReduceBtn()) return;
+            this.startDungeonsCountDown();
         }
 
-        inHeroListPageContent(){
-            if(document.querySelector('input[name=uv_start]')){
+        inHeroListPageContent() {
+            if (document.querySelector('input[name=uv_start]')) {
                 return true;
             }
             return false;
         }
 
         handleReduceBtn() {
-            if(this.reduceBtn?.style.display == '') {
+            if (this.reduceBtn?.style.display == '') {
                 this.reduceBtn.addEventListener('click', () => {
-                    setTimeout(() => {window.location.reload()}, 1000*3);
-                    // TODO: 监控AJAX请求，成功请求后刷新页面
+                    // TODO: 监控AJAX，成功请求后刷新页面
+                    setTimeout(() => {
+                        window.location.reload()
+                    }, 1000 * 3);
                 });
                 this.reduceBtn.click();
                 return true;
             }
             return false;
-        }
-
-        calculateTimeRemaining(){
-            return getOffsetCountdown(this.firstCompletedDungeonTime);
         }
 
         processHeroList() {
@@ -133,9 +155,9 @@
                 ...this.nextDungeonAvailableHeroDetails.map(h => h.time)
             );
             this.firstCompletedheroDetails = this.nextDungeonAvailableHeroDetails.filter(
-                h => h.time == this.firstCompletedDungeonTime
+                h => h.time === this.firstCompletedDungeonTime
             );
-            console.log('processHeroList: ',{
+            console.log('processHeroList: ', {
                 heroRows: this.heroRows,
                 nextDungeonDisabledHeroRows: this.nextDungeonDisabledHeroRows,
                 nextDungeonAvailableHeroRows: this.nextDungeonAvailableHeroRows,
@@ -145,20 +167,157 @@
             });
         }
 
-        sendReminder(){
-            this.nextDungeonDisabledHeroRows.forEach(row => {
-                const newTd = document.createElement('td');
-                newTd.className = 'warning';
-                newTd.textContent = '未选择地城';
-                row.appendChild(newTd);
+        calculateTimeRemaining() {
+            return getOffsetCountdown(this.firstCompletedDungeonTime);
+        }
+
+        storeLoot() {
+            const didntStoredToday = () => {
+                return new Date().getDate() === StateManager.state.lastStoredDate
+            };
+            const isEnoughTime = () => {
+                return 1000 * 60 * this.heroRows.length > this.calculateTimeRemaining();
+            };
+
+            if (!didntStoredToday() && isEnoughTime()) {
+                this.storeLootProcess();
+                return true;
+            }
+
+            return false;
+        }
+
+        storeLootProcess() {
+            let currentIndex = StateManager.state.currentHeroIndex;
+            console.log({
+                currentIndex: currentIndex
+            });
+            if (currentIndex >= this.heroRows.length) {
+                console.log('所有英雄处理完毕');
+                StateManager.update({
+                    lastStoredDate: new Date().getDate(),
+                    currentHeroIndex: 0,
+                });
+                window.location.reload();
+                return;
+            }
+
+            if (this.reduceBtn?.style.display == '') {
+                this.reduceBtn.click();
+            }
+
+            const radio = this.heroRows[currentIndex].querySelector('input[type=radio]');
+            if (radio && !radio.checked) {
+                radio.checked = true;
+                this.submitBtn.click();
+                return;
+            }
+
+            if (currentIndex > 0) {
+                this.heroRows.slice(0, currentIndex).forEach((tr, index) => {
+                    const newTd = document.createElement('td');
+                    console.log({
+                        carryingMaxLootHeroes: StateManager.state.carryingMaxLootHeroes,
+                        index: index,
+                    });
+
+                    if (StateManager.state.carryingMaxLootHeroes.some(obj => obj.heroTableIndex === index)) {
+                        newTd.textContent = this.carryingMaxLootText;
+                    } else {
+                        newTd.textContent = this.emptyHandsText;
+                    }
+                    tr.appendChild(newTd);
+                });
+            }
+
+            const newTd = document.createElement('td');
+            newTd.textContent = this.storingText;
+            this.heroRows[currentIndex].appendChild(newTd);
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: '/wod/spiel/hero/items.php',
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        if (response.responseText.includes(WOD.carryingMaxLootText)) {
+                            const aTag = this.heroRows[currentIndex].querySelector('td:first-child a');
+                            const sessionHeroId = new URL(aTag?.href, window.location.href)
+                                .searchParams
+                                .get('session_hero_id');
+
+                            let carryingMaxLootHeroes = StateManager.state.carryingMaxLootHeroes;
+                            carryingMaxLootHeroes.push({
+                                sessionHeroId: sessionHeroId,
+                                heroTableIndex: currentIndex,
+                            });
+                            StateManager.update({
+                                carryingMaxLootHeroes: carryingMaxLootHeroes
+                            });
+                            newTd.textContent = this.carryingMaxLootText;
+                        } else {
+                            newTd.textContent = this.emptyHandsText;
+                        }
+                        StateManager.update({
+                            currentHeroIndex: ++currentIndex
+                        });
+
+                        this.storeLootProcess();
+                    } else {
+                        console.error(`请求失败，状态码: ${response.status}`);
+                    }
+                },
+                onerror: (error) => {
+                    console.error('请求发生错误:', error);
+                }
             });
         }
 
-        activeHeroes(){
+        startDungeonsCountDown() {
+            if (!this.activeHeroes()) return;
+            this.sendReminder();
+
+            this.firstCompletedheroDetails = this.firstCompletedheroDetails.map(row => ({
+                ...row,
+                newTd: document.createElement('td')
+            }))
+            this.firstCompletedheroDetails.forEach(row => {
+                row.dom.appendChild(row.newTd)
+            });
+
+            let timeoutId = null;
+            const checkTimeout = () => {
+                const countdown = this.calculateTimeRemaining();
+                if (countdown > 0) {
+                    this.firstCompletedheroDetails.forEach(row => {
+                        row.newTd.textContent = '⏱️' + formatTime(countdown);
+                    });
+                    timeoutId = setTimeout(checkTimeout, 1000);
+                } else {
+                    clearTimeout(timeoutId);
+
+                    const newTimeout = StateManager.state.reportCheckTimeout + 5000;
+                    StateManager.update({
+                        reportCheckTimeout: newTimeout
+                    });
+                    console.log({
+                        newTimeout: newTimeout
+                    });
+                    this.firstCompletedheroDetails.forEach(row => {
+                        row.newTd.textContent = `⏱️等待生成战报，${Math.floor(newTimeout/1000)}秒后重试`;
+                    });
+                    setTimeout(() => {
+                        window.location.reload()
+                    }, newTimeout);
+                }
+            };
+            checkTimeout();
+        }
+
+        activeHeroes() {
             // deselect all checkbox
             this.heroRows.forEach(tr => {
                 const checkbox = tr.querySelector('input[type="checkbox"]');
-                if(checkbox && checkbox.checked){
+                if (checkbox && checkbox.checked) {
                     checkbox.checked = false;
                     console.log('deselect: ', checkbox);
                 }
@@ -195,149 +354,81 @@
             this.firstCompletedheroDetails.forEach((row, index) => {
                 const checkbox = row.dom.querySelector('input[type="checkbox"]');
                 const radio = row.dom.querySelector('input[type="radio"][name="FIGUR"]');
-                if(lastOwnedHero){
-                    if(row.owned && checkbox) {
+                if (lastOwnedHero) {
+                    if (row.owned && checkbox) {
                         checkbox.checked = true;
                         console.log('seleted: ', checkbox);
                         let checkboxNotActivated = false;
-                        if(row.dom.querySelector('.hero_inactive')){
+                        if (row.dom.querySelector('.hero_inactive')) {
                             checkboxNotActivated = true;
                         }
-                        if(lastOwnedHeroIndex == index && !radio.checked || checkboxNotActivated){
+                        if (lastOwnedHeroIndex == index && !radio.checked || checkboxNotActivated) {
                             radio.checked = true;
+                            StateManager.update({
+                                reportCheckTimeout: 0
+                            });
                             this.submitBtn.click();
+                            return false;
                         }
                     }
-                }else{
-                    if(lastUvHeroIndex == index && !radio.checked){
-                        radio.checked = true;
-                        this.submitBtn.click();
-                    }
-                }
-            });
-        }
-
-        storeLoot(){
-            let currentIndex = State.getState().currentHeroIndex;
-
-            if (currentIndex >= this.heroRows.length) {
-                console.log('所有英雄处理完毕');
-                State.updateState({
-                    lastStoredDate: new Date().getDate(),
-                    currentHeroIndex: 0,
-                });
-                window.location.reload();
-                console.log(State.getState());
-                return;
-            }
-
-            const radio = this.heroRows[currentIndex].querySelector('input[type=radio]');
-            if(radio && !radio.checked){
-                radio.checked = true;
-                this.submitBtn.click();
-                return;
-            }
-
-            if(currentIndex > 0){
-                this.heroRows.slice(0, currentIndex).forEach(tr => {
-                    let newTd = document.createElement('td');
-                    newTd.textContent = '入库完成';
-                    tr.appendChild(newTd);
-                });
-            }
-
-            let newTd = document.createElement('td');
-            newTd.textContent = '入库中';
-            this.heroRows[currentIndex].appendChild(newTd);
-
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: '/wod/spiel/hero/items.php',
-                onload: (response) => {
-                    if (response.status >= 200 && response.status < 300) {
-                        const buildTextContent = (res) => {
-                            // TODO: 正则获取关键字判断手上的战利品是不是满了
-                        };
-                        State.updateState({currentHeroIndex: ++currentIndex});
-                        newTd.textContent = '入库完成';
-                        this.storeLoot();
-                    } else {
-                        console.error(`请求失败，状态码: ${response.status}`);
-                    }
-                },
-                onerror: (error) => {
-                    console.error('请求发生错误:', error);
-                }
-            });
-        }
-
-        monitor() {
-            // 战利品入库
-            const didntStoredToday = () => (new Date().getDate() === State.getState().lastStoredDate);
-            const isEnoughTime = () => (1000*60*this.heroRows.length > this.calculateTimeRemaining());
-            if(!didntStoredToday() && isEnoughTime()){
-                this.storeLoot();
-                return;
-            }
-
-            // 地城倒计时
-            this.sendReminder();
-            this.activeHeroes();
-            this.startCountdonw();
-        }
-
-        startCountdonw(){
-            this.firstCompletedheroDetails = this.firstCompletedheroDetails.map(row => ({
-                ...row,
-                display: document.createElement('td')
-            }))
-            this.firstCompletedheroDetails.forEach(row => {
-                row.dom.appendChild(row.display)
-            });
-
-            let timeoutId = null;
-            const checkTimeout = () => {
-                const countdown = this.calculateTimeRemaining();
-                if(countdown > 0){
-                    this.firstCompletedheroDetails.forEach(row => {
-                        row.display.innerHTML = '⏱️'+ formatTime(countdown);
+                } else if (lastUvHeroIndex == index && !radio.checked) {
+                    radio.checked = true;
+                    StateManager.update({
+                        reportCheckTimeout: 0
                     });
-                    timeoutId = setTimeout(checkTimeout, 1000);
-                }else{
-                    clearTimeout(timeoutId);
-                    window.location.reload();
+                    this.submitBtn.click();
+                    return false;
                 }
-            };
-            checkTimeout();
+            });
+            return true;
+        }
+
+        sendReminder() {
+            this.nextDungeonDisabledHeroRows.forEach(row => {
+                const newTd = document.createElement('td');
+                newTd.className = 'warning';
+                newTd.textContent = this.unselectedText;
+                row.appendChild(newTd);
+            });
+
+            StateManager.state.carryingMaxLootHeroes.forEach(item => {
+                const row = this.heroRows[item.heroTableIndex];
+                const newTd = document.createElement('td');
+                newTd.className = 'warning';
+                newTd.textContent = this.carryingMaxLootText;
+                row.appendChild(newTd);
+            });
         }
     }
 
-    class VotePageManager{
-        constructor(){
+
+    class VotePageManager {
+
+        constructor() {
             this.currentVote = null;
             this.init();
         }
 
-        init(){
+        init() {
             this.processVoteList();
             this.refreshAtMidnight();
             this.monitor();
         }
 
-        extractJsUrls(a){
+        extractJsUrls(a) {
             const onclickAttr = a?.getAttribute('onclick');
-            if(!onclickAttr) return null;
+            if (!onclickAttr) return null;
             const match = onclickAttr.match(/js_goto_url\('([^']+)'/);
             return match ? match[1] : null;
         }
 
-        processVoteList(){
+        processVoteList() {
             const imgList = Array.from(document.querySelectorAll('div.vote.reward img[title=荣誉]'))
-            .map(row =>({
-                dom: row,
-                url: this.extractJsUrls(row.closest('div.vote.reward').previousElementSibling.querySelector('a')),
-                time: parseTime(row.parentElement.textContent)
-            }));
+                .map(row => ({
+                    dom: row,
+                    url: this.extractJsUrls(row.closest('div.vote.reward').previousElementSibling.querySelector('a')),
+                    time: parseTime(row.parentElement.textContent)
+                }));
             const minItem = imgList.reduce((min, current) => {
                 if (!min || current.time < min.time) return current;
                 return min;
@@ -346,7 +437,7 @@
             this.currentVote = minItem;
         }
 
-        refreshAtMidnight(){
+        refreshAtMidnight() {
             const midnight = new Date();
             midnight.setHours(24, 0, 0, 0);
             const checkTimeout = () => {
@@ -356,7 +447,7 @@
             checkTimeout();
         }
 
-        monitor(){
+        monitor() {
             const newSpan = document.createElement('span');
             this.currentVote.dom.parentElement.appendChild(newSpan);
 
@@ -365,7 +456,7 @@
                 if (remainingtime > 0) {
                     setTimeout(checkTimeout, 1000);
                     newSpan.innerHTML = ' ⏱️' + formatTime(remainingtime);
-                }else{
+                } else {
                     window.location = this.currentVote.url;
                 }
             }
@@ -373,20 +464,64 @@
         }
     }
 
-    class WOD{
+    class ItemsPageManager {
 
-        static AFK(){
+        constructor() {
+            this.init();
+        }
+
+        init() {
+            if (!this.hasText(WOD.carryingMaxLootText)) return;
+
+            console.log('carryingMaxLoot');
+            const submitBtn = document.querySelectorAll('input[type=submit][name=ok]');
+            const markAsEmptyHands = () => {
+                const input = document.querySelector('input[type=hidden][name=session_hero_id]');
+                const seesionHeroId = input.value;
+
+                const carryingMaxLootHeroes = StateManager.state.carryingMaxLootHeroes;
+                const newCarryingMaxLootHeroes = carryingMaxLootHeroes.filter(item => item.sessionHeroId != seesionHeroId);
+                StateManager.update({
+                    carryingMaxLootHeroes: newCarryingMaxLootHeroes,
+                });
+            };
+
+            submitBtn.forEach(btn => {
+                btn.addEventListener('click', markAsEmptyHands);
+            });
+
+        }
+
+        hasText(text) {
+            return document.body.textContent.includes(text);
+        }
+    }
+
+    class WOD {
+
+        static carryingMaxLootText = '满了'; // TODO: 替换正确文本
+
+        static get pageName() {
             const path = window.location.pathname;
             const match = path.match(/\/([^\/]+?)\.php$/);
             const pageName = match ? match[1] : '';
-
             if (typeof pageName !== 'string' || pageName.length === 0) throw new Error('not support current page name');
-            const classMap = { HeroesPageManager, VotePageManager };
-            const className = pageName[0].toUpperCase() + pageName.slice(1) + 'PageManager';
-            const DynamicClass = classMap[className];
-            console.log('Route: ',{
-                currentPathName: path,
-                currentPageName: pageName,
+            return pageName;
+        }
+
+        static get classMap() {
+            return {
+                HeroesPageManager,
+                VotePageManager,
+                ItemsPageManager,
+            };
+        }
+
+        static AFK() {
+            const className = this.pageName[0].toUpperCase() + this.pageName.slice(1) + 'PageManager';
+            const DynamicClass = this.classMap[className];
+            console.log('Route: ', {
+                currentPageName: this.pageName,
                 className: className,
                 DynamicClass: DynamicClass
             });
