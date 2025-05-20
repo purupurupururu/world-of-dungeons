@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.0.5
+// @version      1.0.6
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
@@ -56,7 +56,7 @@
         static STORAGE_KEY = 'WOD_HELPER_STATE';
 
         static DEFAULT_STATE = {
-            _version: '1.0.5',
+            _version: '1.0.6',
             lastStoredDate: 0,
             currentHeroIndex: 0,
             reportCheckTimeout: 0,
@@ -389,7 +389,7 @@
                                 log(`检测到特殊标记 [${xhr._xhrId}]`);
                                 setTimeout(() => {
                                     log(`执行页面刷新 [${xhr._xhrId}]`);
-                                    //location.reload();
+                                    location.reload();
                                 }, 300);
                             }
                         }
