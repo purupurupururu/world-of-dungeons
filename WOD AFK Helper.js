@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WOD AFK Helper
-// @version      1.1.0
+// @version      1.1.1
 // @description  1.自动激活最先结束地城的英雄；2.自动加速地城；3.每日访问一次仓库存放战利品；4.每日自动投票获取荣誉
 // @author       purupurupururu
 // @namespace    https://github.com/purupurupururu
@@ -17,18 +17,34 @@
 (function () {
     'use strict';
 
+    /**
+     * 解析时间字符串为时间戳
+     * @param {string} text - 支持格式：
+     *   1. "明天 02:34"
+     *   2. "03:22"
+     *   3. "今天 11:22"
+     *   4. "你可以再次获得 5 : 明天 17:14"
+     * @returns {number} 时间戳（毫秒）
+     */
     function parseTime(text) {
         if ((/每日|立刻/).test(text)) return 0;
+        // 匹配时间部分：可选前缀（今天/明天+空格） + 时间（HH:mm）
+        const match = text.match(/(明天 |今天 )?(\d{2}:\d{2})$/);
+        if (!match) throw new Error(`不支持的时间格式: '${text}'`);
 
-        const match = text.match(/(今天|明天)?\s(\d{2}):(\d{2})/);
-        if (!match) throw new Error(`not support string：'${text}'`);
-        const [_, dayPart, hours, minutes] = match;
+        // 提取时间部分（如"02:34"）
+        const [_, prefix, timeStr] = match;
+
+        // 拆分小时和分钟
+        const [hours, minutes] = timeStr.split(':');
 
         const date = new Date();
-        if (dayPart === '明天') {
+        date.setHours(hours, minutes, 0, 0);
+
+        // 处理"明天"的情况
+        if (prefix === "明天 ") {
             date.setDate(date.getDate() + 1);
         }
-        date.setHours(hours, minutes, 0, 0);
 
         return date.getTime();
     }
@@ -41,27 +57,54 @@
         return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }
 
-    function GM_fetch(url, options) {
-        console.log(`请求 ${url}`);
+    /**
+     * 封装GM_xmlhttpRequest为Promise风格
+     * @param {string} url 请求地址
+     * @param {object} options 配置项
+     * @returns {Promise<GM_Types.XHRResponse>}
+     */
+    function GM_fetch(url, options = {}) {
+        console.log(`[GM_fetch] 请求 ${url}`);
         return new Promise((resolve, reject) => {
+            const config = {
+                method: 'GET',       // 默认GET
+                timeout: 60_000,     // 默认60秒超时
+                headers: {},         // 默认空headers
+                ...options,          // 用户自定义配置
+                url: url,            // 确保url参数优先级最高
+            };
+
             GM_xmlhttpRequest({
-                method: 'GET',
-                url: url,
-                ...options,
+                ...config,
                 onload: (response) => {
-                    console.log(`response: `, response);
                     if (response.status >= 200 && response.status < 300) {
+                        console.log(`[GM_fetch] 请求成功: ${url}`);
                         resolve(response);
                     } else {
-                        reject(new Error(`HTTP Error: ${response.status}`));
+                        console.error(`[GM_fetch] HTTP错误: ${response.status}`, response);
+                        const err = new Error(`HTTP ${response.status}`);
+                        err.response = response;  // 附加响应对象到error
+                        reject(err);
                     }
                 },
                 onerror: (error) => {
+                    console.error(`[GM_fetch] 网络错误: ${url}`, error);
+                    error.isNetworkError = true;
                     reject(error);
                 },
                 ontimeout: () => {
-                    reject(new Error("Request timeout"));
-                },
+                    console.error(`[GM_fetch] 请求超时: ${url} (${config.timeout}ms)`);
+                    const err = new Error(`请求超时 (${config.timeout}ms)`);
+                    err.isTimeout = true;
+
+                    reject(err);  // 先触发reject
+
+                    // 3秒后刷新页面（可根据需求调整）
+                    setTimeout(() => {
+                        console.log('[GM_fetch] 超时刷新页面...');
+                        window.location.reload();
+                    }, 3000);
+                }
             });
         });
     }
@@ -80,7 +123,7 @@
 
         static getDefaultValues() {
             const defaultValues = {
-                scriptVersion: '1.1.0',
+                scriptVersion: '1.1.1',
                 actionName: HeroesPageManager.ACTION_DUNGEON_MONITOR,
                 lastDepositDate: 0, // 最后入库的日期
                 currentHeroIndex: 0, // 入库操作，当前操作的英雄列表索引
@@ -321,6 +364,14 @@
                     return new VoteService(doc);
                 })
                 .then(votePage => {
+
+                    const canVote = () => {
+                        const heroes = heroTable.findByMinDungeonEndTime();
+                        const countdown = heroes[0].nextDungeon.endTimeCountdown();
+                        const timeCostPerUrl = 60 * 1000;
+                        return countdown > timeCostPerUrl * votePage.findAll().length;
+                    }
+
                     return new Promise(resolve => {
                         const checkTimeout = () => {
                             const event = votePage.findOneByMaxRewardTime();
@@ -346,8 +397,10 @@
                                     selector: '.vote.countdown'
                                 }));
                             } else {
-                                ScriptStorageManager.setActionName(HeroesPageManager.ACTION_VOTE);
-                                window.location.reload();
+                                if (canVote()) {
+                                    ScriptStorageManager.setActionName(HeroesPageManager.ACTION_VOTE);
+                                    window.location.reload();
+                                }
                             }
                         }
                         checkTimeout();
@@ -507,16 +560,19 @@
             return new VoteService(doc);
         }
 
+        _
+
         canStore() {
             const didStoredToday = () => {
                 return new Date().getDate() === ScriptStorageManager.getLastDepositDate();
             }
-            const isEnoughTimeToStore = () => {
+            const isTimeEnough = () => {
                 const heroes = this.heroTable.findByMinDungeonEndTime();
                 const countdown = heroes[0].nextDungeon.endTimeCountdown();
-                return countdown > 1000 * 60 * this.heroTable.findAll().length;
+                const timeCostPerHero = 1000 * 60 * 2;
+                return countdown > timeCostPerHero * this.heroTable.findAll().length;
             }
-            return !didStoredToday() && isEnoughTimeToStore();
+            return !didStoredToday() && isTimeEnough();
         }
 
         activeHero(row) {
@@ -898,7 +954,7 @@
         constructor(td) {
             this.dom = td;
             this.name = this.dom.getAttribute('onmouseover')?.match(/wodToolTip\(.*?,\s*'([^']*)'/)?.[1] || null;
-            this.endTimeStr = this.dom.textContent;
+            this.endTimeStr = this.dom.textContent.trim();
             this.endTimestamp = parseTime(this.endTimeStr);
         }
 
